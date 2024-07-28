@@ -77,11 +77,11 @@ const useSmartAccount = () => {
 		});
 
 		// Policies to allow Locker agent to send money to user's hot wallet
-		let hotWalletUsdcPolicy;
+		let hotWalletPolicy;
 		// let hotWalletErc20Policy;
 		// let hotWalletNativePolicy;
 		if (hotWalletAddress) {
-			hotWalletUsdcPolicy = getCombinedPolicy(hotWalletAddress);
+			hotWalletPolicy = getCombinedPolicy(hotWalletAddress);
 			// hotWalletErc20Policy = getErc20Policy(hotWalletAddress);
 			// hotWalletNativePolicy = getNativePolicy(hotWalletAddress);
 		}
@@ -101,7 +101,7 @@ const useSmartAccount = () => {
 
 		// Filter out undefined policies
 		const policies = [
-			hotWalletUsdcPolicy,
+			hotWalletPolicy,
 			// hotWalletErc20Policy,
 			// hotWalletNativePolicy,
 			// offrampErc20Policy,

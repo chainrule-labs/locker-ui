@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import { AiOutlineLoading3Quarters } from "react-icons/ai";
 import { FaRobot } from "react-icons/fa6";
+import { IoWarningOutline } from "react-icons/io5";
 import { checksumAddress } from "viem";
 import { useAccount, useSwitchChain, useWalletClient } from "wagmi";
 
@@ -11,7 +12,7 @@ import { supportedChainIdsArray } from "@/data/constants/supportedChains";
 import { useConnectModal } from "@/hooks/useConnectModal";
 import { useQrCodeModal } from "@/hooks/useQrCodeModal";
 import useSmartAccount from "@/hooks/useSmartAccount";
-import { createPolicy } from "@/services/lockers";
+import { createPolicy, updatePolicy } from "@/services/lockers";
 import { Automation, Locker, Policy } from "@/types";
 import { getChainIconStyling } from "@/utils/getChainIconStyling";
 import { getChainNameFromId } from "@/utils/getChainName";
@@ -38,10 +39,13 @@ function MultiChainOverview({
 	const [isLoading, setIsLoading] = useState<boolean>(false);
 	const [chainRowLoading, setChainRowLoading] = useState<number | null>(null);
 	const [chainSwitched, setChainSwitched] = useState<boolean>(false);
+	const [updating, setUpdating] = useState<boolean>(false);
 	const [targetChainId, setTargetChainId] = useState<number | null>(null);
 	const [pendingPolicyChainId, setPendingPolicyChainId] = useState<
 		number | null
 	>(null);
+	const [pendingPolicyUpdateChainId, setPendingPolicyUpdateChainId] =
+		useState<number | null>(null);
 
 	const { getToken } = useAuth();
 	const { signSessionKey } = useSmartAccount();
@@ -52,7 +56,14 @@ function MultiChainOverview({
 	const { openQrCodeModal, renderQrCodeModal } = useQrCodeModal();
 	const [qrChainId, setQrChainId] = useState(0);
 
-	const handleChainSwitch = async (policyChainId: number) => {
+	const handleChainSwitch = async (
+		policyChainId: number,
+		update: boolean
+	) => {
+		if (update) {
+			setUpdating(true);
+		}
+
 		setTargetChainId(policyChainId);
 		switchChain({ chainId: policyChainId });
 		setChainSwitched(true);
@@ -71,7 +82,7 @@ function MultiChainOverview({
 		}
 
 		if (walletChainId !== policyChainId) {
-			await handleChainSwitch(policyChainId);
+			await handleChainSwitch(policyChainId, false);
 			return; // Exit early as the useEffect will handle calling createNewPolicy again
 		}
 
@@ -80,19 +91,19 @@ function MultiChainOverview({
 			return;
 		}
 
-		const hotWalletAutomation = automations.find(
-			(a) => a.type === "forward_to"
-		);
+		// const hotWalletAutomation = automations.find(
+		// 	(a) => a.type === "forward_to"
+		// );
 
-		const hotWalletAddress =
-			hotWalletAutomation && hotWalletAutomation.recipientAddress
-				? hotWalletAutomation.recipientAddress
-				: locker.ownerAddress;
+		// const hotWalletAddress =
+		// 	hotWalletAutomation && hotWalletAutomation.recipientAddress
+		// 		? hotWalletAutomation.recipientAddress
+		// 		: locker.ownerAddress;
 
 		const sig = await signSessionKey(
 			walletChainId,
-			0, // lockerIndex
-			hotWalletAddress
+			0 // lockerIndex
+			// hotWalletAddress
 			// undefined // offrampAddress
 		);
 		if (!sig) {
@@ -106,11 +117,79 @@ function MultiChainOverview({
 			chainId: policyChainId as number,
 			sessionKey: sig as string,
 			automations,
+			sessionKeyIsValid: true,
 		};
 
 		const authToken = await getToken();
 		if (authToken) {
 			await createPolicy(authToken, policy, setErrorMessage);
+		}
+
+		fetchPolicies();
+
+		setIsLoading(false);
+		setChainRowLoading(null);
+	};
+
+	const updateStalePolicy = async (policyChainId: number) => {
+		setIsLoading(true);
+		setChainRowLoading(policyChainId);
+		setErrorMessage("");
+
+		if (checksumAddress(locker.ownerAddress) !== address) {
+			setErrorMessage(errors.UNAUTHORIZED);
+			setIsLoading(false);
+			setChainRowLoading(null);
+			return;
+		}
+
+		if (walletChainId !== policyChainId) {
+			await handleChainSwitch(policyChainId, true);
+			return; // Exit early as the useEffect will handle calling createNewPolicy again
+		}
+
+		if (!walletClient) {
+			setPendingPolicyUpdateChainId(policyChainId);
+			return;
+		}
+
+		// const hotWalletAutomation = automations.find(
+		// 	(a) => a.type === "forward_to"
+		// );
+
+		// const hotWalletAddress =
+		// 	hotWalletAutomation && hotWalletAutomation.recipientAddress
+		// 		? hotWalletAutomation.recipientAddress
+		// 		: locker.ownerAddress;
+
+		const sig = await signSessionKey(
+			walletChainId,
+			0 // lockerIndex
+			// hotWalletAddress
+			// undefined // offrampAddress
+		);
+		if (!sig) {
+			setIsLoading(false);
+			setChainRowLoading(null);
+			return;
+		}
+
+		const currentPolicy = policies.find(
+			(pol) => pol.chainId === policyChainId
+		) as Policy;
+
+		const policy: Policy = {
+			id: currentPolicy.id,
+			lockerId: locker.id as number,
+			chainId: policyChainId as number,
+			sessionKey: sig as string,
+			automations,
+			sessionKeyIsValid: true,
+		};
+
+		const authToken = await getToken();
+		if (authToken) {
+			await updatePolicy(authToken, policy, setErrorMessage);
 		}
 
 		fetchPolicies();
@@ -127,19 +206,37 @@ function MultiChainOverview({
 		}
 	};
 
+	const handlePolicyUpdate = (policyChainId: number) => {
+		if (isConnected) {
+			updateStalePolicy(policyChainId);
+		} else {
+			openConnectModal();
+		}
+	};
+
 	useEffect(() => {
-		if (chainSwitched && walletChainId === targetChainId) {
+		if (chainSwitched && walletChainId === targetChainId && !updating) {
 			createNewPolicy(targetChainId!);
 			setChainSwitched(false);
 		}
-	}, [chainSwitched, walletChainId, targetChainId]);
+
+		if (chainSwitched && walletChainId === targetChainId && updating) {
+			updateStalePolicy(targetChainId!);
+			setChainSwitched(false);
+		}
+	}, [chainSwitched, walletChainId, targetChainId, updating]);
 
 	useEffect(() => {
 		if (walletClient && pendingPolicyChainId !== null) {
 			createNewPolicy(pendingPolicyChainId);
 			setPendingPolicyChainId(null);
 		}
-	}, [walletClient, pendingPolicyChainId]);
+
+		if (walletClient && pendingPolicyUpdateChainId !== null) {
+			updateStalePolicy(pendingPolicyUpdateChainId);
+			setPendingPolicyUpdateChainId(null);
+		}
+	}, [walletClient, pendingPolicyChainId, pendingPolicyUpdateChainId]);
 
 	const showQrModal = (chainId: number) => {
 		setQrChainId(chainId);
@@ -151,6 +248,19 @@ function MultiChainOverview({
 
 	return (
 		<div className="flex w-full min-w-52 max-w-lg flex-col divide-y divide-light-200 overflow-hidden rounded-md border border-light-200 text-sm shadow-sm shadow-light-600 dark:divide-dark-200 dark:border-dark-200 dark:shadow-none">
+			{policies.some((pol) => !pol.sessionKeyIsValid) && (
+				<div className="flex w-full items-center justify-center p-2 text-center">
+					<div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-warning/20 text-warning">
+						<IoWarningOutline size={16} />
+					</div>
+					<span className="ml-3 text-xs text-light-600">
+						One or more chains requires re-enabling automations.
+						<br /> Automations must be individually authorized on
+						each chain.
+					</span>
+				</div>
+			)}
+
 			{supportedChainIdsArray.map((chainId) => {
 				const isFunded = fundedChainIds.includes(chainId);
 				const policy = policies.find((pol) => pol.chainId === chainId);
@@ -205,13 +315,32 @@ function MultiChainOverview({
 												size={16}
 											/>
 										) : (
-											"Automate"
+											"Enable"
+										)}
+									</button>
+								)}
+								{policy && !policy.sessionKeyIsValid && (
+									<button
+										className="flex h-8 w-24 items-center justify-center rounded-full bg-light-200 hover:bg-light-300 dark:bg-dark-400 dark:hover:bg-dark-300"
+										onClick={() =>
+											handlePolicyUpdate(chainId)
+										}
+										disabled={isLoading}
+									>
+										{isLoading &&
+										chainRowLoading === chainId ? (
+											<AiOutlineLoading3Quarters
+												className="animate-spin"
+												size={16}
+											/>
+										) : (
+											"Re-Enable"
 										)}
 									</button>
 								)}
 							</div>
 						</div>
-						{policy && (
+						{policy && policy.sessionKeyIsValid && (
 							<div className="ml-3 flex size-7 items-center justify-center">
 								<FaRobot
 									className={`${isFunded ? "text-success" : "text-light-600"} shrink-0`}
